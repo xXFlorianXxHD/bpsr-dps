@@ -1,0 +1,44 @@
+package main
+
+//type tcpStream struct {
+//	net, transport     gopacket.Flow
+//	readerStream       tcpreader.ReaderStream
+//	reassembledPackets chan gopacket.Packet
+//}
+//
+//func (t *tcpStream) New(net, transport gopacket.Flow) tcpassembly.Stream {
+//	r := tcpreader.NewReaderStream()
+//	tcp := tcpStream{
+//		net:                net,
+//		transport:          transport,
+//		readerStream:       r,
+//		reassembledPackets: t.reassembledPackets,
+//	}
+//	go tcp.run() // Start reading from the application layer stream
+//	return &tcp
+//}
+//
+//func (t *tcpStream) Reassembled(reassembly []tcpassembly.Reassembly) {}
+//
+//func (t *tcpStream) ReassemblyComplete() {}
+//
+//func (t *tcpStream) run() {
+//	buf := make([]byte, 1024)
+//	for {
+//		n, err := t.readerStream.Read(buf)
+//		if err != nil || n == 0 {
+//			// The stream was closed
+//			return
+//		}
+//
+//		data := buf[:n]
+//
+//		logrus.Info("c")
+//		packet := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.Default)
+//		logrus.Infof("a")
+//		t.reassembledPackets <- packet
+//		logrus.Infof("b")
+//		// Now `data` holds the reassembled TCP stream data.
+//		logrus.Warnf("Got %d bytes from stream %s:%s", len(data), t.net, t.transport)
+//	}
+//}

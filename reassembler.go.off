@@ -1,0 +1,88 @@
+package main
+
+import (
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/tcpassembly"
+	"github.com/google/gopacket/tcpassembly/tcpreader"
+	"github.com/sirupsen/logrus"
+	"log"
+)
+
+// StreamFactory creates new stream handlers for each new TCP connection.
+type streamFactory struct {
+	assembledPackets chan []byte
+}
+
+func (f *streamFactory) New(net, transport gopacket.Flow) tcpassembly.Stream {
+	r := tcpreader.NewReaderStream()
+	s := &tcpStream{
+		r,
+		f.assembledPackets,
+	}
+	go s.run()
+	return s
+}
+
+type tcpStream struct {
+	r                tcpreader.ReaderStream
+	assembledPackets chan []byte
+}
+
+func (s *tcpStream) Reassembled(reassemblies []tcpassembly.Reassembly) {
+	//TODO implement me
+	//panic("implement me")
+}
+
+func (s *tcpStream) ReassemblyComplete() {
+	//TODO implement me
+	//panic("implement me")
+}
+
+//type Stream struct {
+//	bytes chan []byte
+//}
+
+func (s *tcpStream) run() {
+	buf := make([]byte, 4096)
+	for {
+		n, err := s.r.Read(buf)
+		if n > 0 {
+			logrus.Warn("a")
+			logrus.Infof("Stream reassembled data: %q\n", buf[:n])
+			s.assembledPackets <- buf[:n]
+			logrus.Warnf("b")
+		}
+		if err != nil {
+			if err.Error() != "EOF" {
+				log.Printf("stream read error: %v", err)
+			}
+			break
+		}
+	}
+}
+
+//func (s *Stream) run() {
+//	for b := range s.bytes {
+//		fmt.Printf("Got reassembled data: %q\n", b)
+//		// process payload...
+//	}
+//}
+
+//// Accept reassembled bytes from assembler
+//func (s *Stream) ReassembledSG(sg reassembly.ScatterGather, ac reassembly.AssemblerContext) {
+//	data := sg.Fetch(-1)
+//	if len(data) > 0 {
+//		if s.bytes == nil {
+//			s.bytes = make(chan []byte, 100)
+//		}
+//		s.bytes <- data
+//	}
+//	sg.Dispose()
+//}
+//
+//// Called when TCP session closes
+//func (s *Stream) ReassemblyComplete(ac reassembly.AssemblerContext) {
+//	if s.bytes != nil {
+//		close(s.bytes)
+//	}
+//}
