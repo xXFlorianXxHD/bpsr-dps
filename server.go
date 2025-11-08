@@ -4,12 +4,9 @@ import (
 	bpsr "bpsr-dps/pkg/pb/proto"
 	tcpassembler "bpsr-dps/pkg/tcp"
 	"bytes"
-	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/tcpassembly"
 	//"github.com/klauspost/compress/zstd"
 	"github.com/DataDog/zstd"
 	"github.com/sirupsen/logrus"
@@ -135,211 +132,160 @@ func (s *Server) filterPackets() {
 	}()
 }
 
+func (s *Server) hasSubPackets(payload []byte, packets chan []byte) bool {
+
+	if len(payload) < 6 {
+		return false
+	}
+
+	packetSize := getPacketSize(payload)
+
+	if packetSize <= len(payload) {
+		subPacket := payload[:packetSize]
+		packets <- subPacket
+		return s.hasSubPackets(payload[packetSize:], packets)
+	}
+
+	return false
+}
+
 func (s *Server) foo() {
-
-	//reassembledStream := make(chan gopacket.Packet)
-	//s.assembledPackets = reassembledStream
-	//
-	//streamPool := tcpassembly.NewStreamPool(&tcpStream{})
-	//assembler := tcpassembly.NewAssembler(streamPool)
-
-	//assembler := tcpassembly.NewAssembler(nil)
 
 	reassembler := &tcpassembler.TCPReassembler{Input: s.filteredPackets}
 	reassembler.Start()
 
-	//go func() {
-	//	for packet := range s.filteredPackets {
-	//		payload := getPayloadFromPacket(packet)
-	//
-	//		s.assembledPackets <- payload
-	//	}
-	//}()
-
 	go func() {
 		for payload := range reassembler.Output {
-			// handle fully-reassembled TCP application data
-			//logrus.Infof("GOT REASSEMBLED: %q\n", payload)
-
-			if len(payload) < 6 {
-				continue
-			}
-
-			ps := payload[:4]
-			pt := payload[4:6]
-
-			packetSize := binary.BigEndian.Uint32(ps)
-			packetType := binary.BigEndian.Uint16(pt)
-
-			isZSTDCompressed := packetType & 0x8000
-			messageTypeID := packetType & 0x7fff
-
-			//logrus.Infof("payload size: %d, packetSize: %d, packetType: %d, messageTypeID: %d, isZSTDCompressed: %d", len(payload), packetSize, packetType, messageTypeID, isZSTDCompressed)
-
-			actualMessageTypeID := FragmentType(messageTypeID)
-
-			switch actualMessageTypeID {
-			case Notify:
-				//logrus.Infof("received notify packet")
-				sUUID := payload[6:14]
-
-				serviceUUID := binary.BigEndian.Uint64(sUUID)
-
-				if serviceUUID != 0x0000000063335342 {
-					logrus.Errorf("Service UUID: 0x%X", serviceUUID)
-					continue
-				}
-
-				// payload[14:18] = stubID = wasted
-
-				mID := payload[18:22]
-				methodIDRaw := binary.BigEndian.Uint32(mID)
-
-				msgPayload := payload[22:]
-
-				methodID := Opcode(methodIDRaw)
-
-				//actualPayload := msgPayload
-
-				var actualPayload []byte
-
-				if isZSTDCompressed != 0 {
-					result, err := s.DecompressWithCGO(msgPayload)
-					if err != nil {
-						logrus.Error(err)
-						continue
-					}
-					actualPayload = result
-				} else {
-					actualPayload = msgPayload
-				}
-
-				if methodID == SyncNearDeltaInfo {
-					//res := anypb.Any{}
-					res := bpsr.SyncNearDeltaInfo{}
-					logrus.Infof("len: %d, cap: %d, payload: %v", len(actualPayload), cap(actualPayload), actualPayload)
-
-					err := UnmarshalLenient(actualPayload, &res)
-					//err := proto.Unmarshal(actualPayload, &res)
-					if err != nil {
-						logrus.Errorf("Error unmarshalling SyncNearDeltaInfo: %v", err)
-
-						logrus.Infof("string: %s", hex.EncodeToString(actualPayload))
-						continue
-					}
-					logrus.Warnf("aaaa: %+v", res)
-
-					//for _, v := range res.DeltaInfos {
-					//	if v == nil {
-					//		continue
-					//	}
-					//	if v.SkillEffects == nil {
-					//		continue
-					//	}
-					//	for _, vv := range v.SkillEffects.Damages {
-					//		if vv == nil {
-					//			continue
-					//		}
-					//		av := vv.ActualValue
-					//		val := vv.Value
-					//
-					//		logrus.Infof("actualValue: %d, value: %d", av, val)
-					//	}
-					//}
-				} else {
-					logrus.Warnf("got different opcode %d", methodID)
-				}
-
-			case FrameDown:
-				//logrus.Infof("frame down")
-
-				if len(payload) < 10 {
-					continue
-				}
-
-				if len(payload[10:]) == 0 {
-					continue
-				}
-
-				nestedPacket := payload[10:]
-				if isZSTDCompressed != 0 {
-					logrus.Infof("%d:%d", len(nestedPacket), packetSize)
-					result, err := s.DecompressWithCGO(nestedPacket)
-					if err != nil {
-						logrus.Error(err)
-						continue
-					}
-					reassembler.Output <- result
-					//logrus.Errorf("should decompress LOL")
-				} else {
-					reassembler.Output <- nestedPacket
-				}
-			default:
-				//logrus.Warnf("wtf")
-
-			}
-
+			s.handlePacket(payload, reassembler.Output)
 		}
 	}()
-
-	// TODO: this might work, who knows
-	//assembledPackets := make(chan []byte)
-	//factory := &streamFactory{
-	//	assembledPackets: assembledPackets,
-	//}
-	//streamPool := tcpassembly.NewStreamPool(factory)
-	//assembler := tcpassembly.NewAssembler(streamPool)
-	//
-	//go processPackets(s.filteredPackets, assembler)
-	//
-	//ticker := time.NewTicker(time.Minute)
-	//defer ticker.Stop()
-	//for range ticker.C {
-	//	assembler.FlushOlderThan(time.Now().Add(-2 * time.Minute))
-	//}
-
-	//go func() {
-	//	for packet := range s.filteredPackets {
-	//		//logrus.Warnf("got filtered packet: %v", packet)
-	//
-	//		tcpLayer := packet.Layer(layers.LayerTypeTCP)
-	//		if tcpLayer == nil {
-	//			continue
-	//		}
-	//
-	//		tcp, _ := tcpLayer.(*layers.TCP)
-	//		assembler.AssembleWithTimestamp(packet.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
-	//
-	//		//streamFactory := func(net, transport gopacket.Flow) tcpassembly.Stream {
-	//		//	readerStream := tcpreader.NewReaderStream()
-	//		//	t := tcpStream{
-	//		//		net:       net,
-	//		//		transport: transport,
-	//		//		readerStream:         readerStream,
-	//		//	}
-	//		//	go t.run() // Start reading from the application layer stream
-	//		//	return &t
-	//		//}
-	//
-	//	}
-	//}()
 }
 
-func processPackets(pktChan <-chan gopacket.Packet, assembler *tcpassembly.Assembler) {
-	for pkt := range pktChan {
-		if tcpLayer := pkt.Layer(layers.LayerTypeTCP); tcpLayer != nil {
-			tcp := tcpLayer.(*layers.TCP)
-			net := pkt.NetworkLayer()
-			if net == nil {
-				continue // skip packets without a network layer
-			}
-			assembler.AssembleWithTimestamp(
-				net.NetworkFlow(),
-				tcp,
-				pkt.Metadata().Timestamp,
-			)
+type GamePacket struct {
+	PacketType          int
+	IsZSTDCompressed    int
+	MessageTypeID       int
+	ActualMessageTypeID FragmentType
+	Payload             []byte
+}
+
+func NewGamePacket(packetType, isZSTDCompressed, messageTypeID int, payload []byte) *GamePacket {
+
+	actualMessageTypeID := FragmentType(messageTypeID)
+
+	return &GamePacket{
+		PacketType:          packetType,
+		IsZSTDCompressed:    isZSTDCompressed,
+		MessageTypeID:       messageTypeID,
+		ActualMessageTypeID: actualMessageTypeID,
+		Payload:             payload,
+	}
+}
+
+func (s *Server) handlePacket(payload []byte, packets chan []byte) {
+	if len(payload) < 6 {
+		return
+	}
+
+	packetType := getPacketType(payload)
+
+	isZSTDCompressed := packetType & 0x8000
+	messageTypeID := packetType & 0x7fff
+
+	//logrus.Infof("payload size: %d, packetSize: %d, packetType: %d, messageTypeID: %d, isZSTDCompressed: %d", len(payload), packetSize, packetType, messageTypeID, isZSTDCompressed)
+
+	actualMessageTypeID := FragmentType(messageTypeID)
+
+	gamePacket := NewGamePacket(packetType, isZSTDCompressed, messageTypeID, payload)
+
+	switch actualMessageTypeID {
+	case Notify:
+		s.handleNotify(gamePacket)
+	case FrameDown:
+		s.handleFrameDown(gamePacket, packets)
+	default:
+	}
+}
+
+func (s *Server) handleFrameDown(gamePacket *GamePacket, packets chan []byte) bool {
+	if len(gamePacket.Payload) < 10 {
+		return true
+	}
+
+	if len(gamePacket.Payload[10:]) == 0 {
+		return true
+	}
+
+	nestedPacket := gamePacket.Payload[10:]
+
+	var pak []byte
+
+	if gamePacket.IsZSTDCompressed != 0 {
+		result, err := s.DecompressWithCGO(nestedPacket)
+		if err != nil {
+			logrus.Error(err)
+			return true
 		}
-		// Optionally: assembler.FlushOlderThan(time.Now().Add(-time.Minute))
+		pak = result
+	} else {
+		pak = nestedPacket
+	}
+
+	hasSubPackets := s.hasSubPackets(pak, packets)
+	if hasSubPackets {
+		return true
+	}
+	packets <- pak
+	return false
+}
+
+func (s *Server) handleNotify(gamePacket *GamePacket) {
+	serviceUUID := getServiceUUID(gamePacket.Payload)
+	if serviceUUID != 0x0000000063335342 {
+		logrus.Errorf("Service UUID: 0x%X", serviceUUID)
+		return
+	}
+
+	// payload[14:18] = stubID = wasted
+
+	methodIDRaw := getMethodIDRaw(gamePacket.Payload)
+	methodID := Opcode(methodIDRaw)
+	msgPayload := gamePacket.Payload[22:]
+
+	var actualPayload []byte
+
+	if gamePacket.IsZSTDCompressed != 0 {
+		result, err := s.DecompressWithCGO(msgPayload)
+		if err != nil {
+			logrus.Error(err)
+			return
+		}
+		actualPayload = result
+	} else {
+		actualPayload = msgPayload
+	}
+
+	if methodID == SyncNearDeltaInfo {
+		res := bpsr.SyncNearDeltaInfo{}
+		//logrus.Infof("len: %d, cap: %d, payload: %v", len(actualPayload), cap(actualPayload), actualPayload)
+
+		err := UnmarshalLenient(actualPayload, &res)
+		if err != nil {
+			logrus.Errorf("Error unmarshalling SyncNearDeltaInfo: %v", err)
+			return
+		}
+
+		for _, v := range res.GetDeltaInfos() {
+			for _, vv := range v.GetSkillEffects().GetDamages() {
+				av := vv.GetActualValue()
+				val := vv.GetValue()
+				lucky := vv.GetLuckyValue()
+
+				logrus.Infof("actualValue: %d, value: %d, lucky: %d", av, val, lucky)
+			}
+		}
+	} else {
+		//logrus.Warnf("got different opcode %d", methodID)
 	}
 }
 
@@ -364,12 +310,13 @@ func (s *Server) DecompressWithCGO(src []byte) ([]byte, error) {
 //}
 
 func UnmarshalLenient(b []byte, msg proto.Message) error {
-	opt := proto.UnmarshalOptions{
-		DiscardUnknown: true, // ignore unknown fields
-		AllowPartial:   true, // allow missing required (proto2)
-		Merge:          false,
-	}
-	return opt.Unmarshal(b, msg)
+	//opt := proto.UnmarshalOptions{
+	//	DiscardUnknown: true, // ignore unknown fields
+	//	AllowPartial:   true, // allow missing required (proto2)
+	//	Merge:          false,
+	//}
+	//return opt.Unmarshal(b, msg)
+	return proto.Unmarshal(b, msg)
 }
 
 func (s *Server) bar() {
