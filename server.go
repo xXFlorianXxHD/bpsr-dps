@@ -216,20 +216,7 @@ func (s *Server) handleFrameDown(gamePacket *GamePacket, packets chan []byte) bo
 		return true
 	}
 
-	nestedPacket := gamePacket.Payload[10:]
-
-	var pak []byte
-
-	if gamePacket.IsZSTDCompressed != 0 {
-		result, err := s.DecompressWithCGO(nestedPacket)
-		if err != nil {
-			logrus.Error(err)
-			return true
-		}
-		pak = result
-	} else {
-		pak = nestedPacket
-	}
+	pak := s.assertDecompressedPayload(gamePacket, 10)
 
 	hasSubPackets := s.hasSubPackets(pak, packets)
 	if hasSubPackets {
@@ -237,6 +224,25 @@ func (s *Server) handleFrameDown(gamePacket *GamePacket, packets chan []byte) bo
 	}
 	packets <- pak
 	return false
+}
+
+func (s *Server) assertDecompressedPayload(gamePacket *GamePacket, msgPayloadStart int) []byte {
+	msgPayload := gamePacket.Payload[msgPayloadStart:]
+
+	var actualPayload []byte
+
+	if gamePacket.IsZSTDCompressed != 0 {
+		result, err := s.DecompressWithCGO(msgPayload)
+		if err != nil {
+			logrus.Error(err)
+			return nil
+		}
+		actualPayload = result
+	} else {
+		actualPayload = msgPayload
+	}
+
+	return actualPayload
 }
 
 func (s *Server) handleNotify(gamePacket *GamePacket) {
@@ -250,43 +256,37 @@ func (s *Server) handleNotify(gamePacket *GamePacket) {
 
 	methodIDRaw := getMethodIDRaw(gamePacket.Payload)
 	methodID := Opcode(methodIDRaw)
-	msgPayload := gamePacket.Payload[22:]
 
-	var actualPayload []byte
+	actualPayload := s.assertDecompressedPayload(gamePacket, 22)
 
-	if gamePacket.IsZSTDCompressed != 0 {
-		result, err := s.DecompressWithCGO(msgPayload)
-		if err != nil {
-			logrus.Error(err)
-			return
-		}
-		actualPayload = result
-	} else {
-		actualPayload = msgPayload
+	switch methodID {
+	case SyncNearDeltaInfo:
+		s.handleSyncNearDeltaInfo(actualPayload)
+	default:
+		logrus.Debugf("nothing to do")
+	}
+}
+
+func (s *Server) handleSyncNearDeltaInfo(actualPayload []byte) bool {
+	res := bpsr.SyncNearDeltaInfo{}
+	//logrus.Infof("len: %d, cap: %d, payload: %v", len(actualPayload), cap(actualPayload), actualPayload)
+
+	err := UnmarshalLenient(actualPayload, &res)
+	if err != nil {
+		logrus.Errorf("Error unmarshalling SyncNearDeltaInfo: %v", err)
+		return true
 	}
 
-	if methodID == SyncNearDeltaInfo {
-		res := bpsr.SyncNearDeltaInfo{}
-		//logrus.Infof("len: %d, cap: %d, payload: %v", len(actualPayload), cap(actualPayload), actualPayload)
+	for _, v := range res.GetDeltaInfos() {
+		for _, vv := range v.GetSkillEffects().GetDamages() {
+			av := vv.GetActualValue()
+			val := vv.GetValue()
+			lucky := vv.GetLuckyValue()
 
-		err := UnmarshalLenient(actualPayload, &res)
-		if err != nil {
-			logrus.Errorf("Error unmarshalling SyncNearDeltaInfo: %v", err)
-			return
+			logrus.Infof("actualValue: %d, value: %d, lucky: %d", av, val, lucky)
 		}
-
-		for _, v := range res.GetDeltaInfos() {
-			for _, vv := range v.GetSkillEffects().GetDamages() {
-				av := vv.GetActualValue()
-				val := vv.GetValue()
-				lucky := vv.GetLuckyValue()
-
-				logrus.Infof("actualValue: %d, value: %d, lucky: %d", av, val, lucky)
-			}
-		}
-	} else {
-		//logrus.Warnf("got different opcode %d", methodID)
 	}
+	return false
 }
 
 func (s *Server) DecompressWithCGO(src []byte) ([]byte, error) {
